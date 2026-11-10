@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wave Control</title>
+<style>
+  :root {
+    --bg: #0d1b24; --panel: rgba(13, 27, 36, .84); --line: rgba(120, 170, 190, .25); --ink: #e6f1f5; --mute: #9dbac6;
+    --sea: #3fb6c9; --foam: #f3c969; --warn: #e86a5c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body { background: linear-gradient(#1b2d3a, #0d1b24); color: var(--ink);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+  /* ---------- full-screen stage ---------- */
+  .stage { position: fixed; inset: 0; }
+  .stage video, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  #weather { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #camMsg[hidden] { display: none; }
+  #camMsg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mute); text-align: center; padding: 20px; font-size: 16px; }
+
+  .title { position: fixed; left: 16px; top: 14px; max-width: min(520px, calc(100vw - 32px));
+           background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px;
+           backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  .title h1 { margin: 0; font-size: 17px; }
+  .title p { margin: 2px 0 0; color: var(--mute); font-size: 12.5px; }
+  .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .tag { background: rgba(0,0,0,.25); border: 1px solid var(--line); padding: 2px 9px; border-radius: 999px; font-size: 12px; color: var(--mute); }
+  .tag b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- compact dashboard, bottom-right ---------- */
+  .dash { position: fixed; right: 16px; bottom: 16px; width: 290px; max-height: calc(100vh - 32px); overflow: auto;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px 12px;
+          backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font-size: 13px; }
+  @media (max-width: 520px) { .dash { left: 16px; width: auto; } }
+  .dash-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .dash-head span { font-weight: 700; letter-spacing: .3px; }
+  #collapse { flex: 0; background: none; border: 0; color: var(--mute); font-size: 18px; cursor: pointer; padding: 0 4px; min-width: 0; }
+  .dash.min .dash-body { display: none; }
+  .dash.min .dash-head { margin-bottom: 0; }
+
+  .buttons { display: flex; gap: 8px; }
+  button { flex: 1; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--sea);
+           background: transparent; color: var(--ink); font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary { background: var(--sea); color: #06222a; }
+  button:disabled { opacity: .45; cursor: default; }
+  .status { margin: 8px 0 10px; font-size: 12px; color: var(--mute); line-height: 1.55; }
+  .status b { color: var(--ink); font-weight: 600; }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-right: 5px; vertical-align: 1px; }
+  .dot.on { background: #58d68d; }
+  code { font: 12px ui-monospace, Menlo, monospace; color: var(--foam); }
+
+  .meter { margin-bottom: 9px; }
+  .meter .row { display: flex; justify-content: space-between; align-items: baseline; }
+  .meter .label { font-weight: 600; }
+  .meter .val { font-variant-numeric: tabular-nums; color: var(--foam); font-weight: 700; }
+  .meter .sub { font-size: 11.5px; color: var(--mute); font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; background: rgba(0,0,0,.35); border-radius: 4px; margin-top: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--sea), var(--foam)); }
+
+  #graph { width: 100%; height: 54px; display: block; margin-top: 2px; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--mute); font-size: 12px; }
+  .tune label { display: flex; justify-content: space-between; font-size: 12px; color: var(--mute); margin-top: 6px; }
+  .tune input { width: 100%; accent-color: var(--sea); }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="overlay"></canvas>
+  <canvas id="weather"></canvas>
+  <div id="camMsg"><span>Click <b>Start camera</b> (bottom right) to begin.</span></div>
+</div>
+
+<div class="title">
+  <h1>Wave → Boat</h1>
+  <p>Wave faster for a storm. Wave wider for more wind. Make a fist to calm the sea.</p>
+  <div class="tags">
+    <span class="tag" id="gestureTag">no hand</span>
+    <span class="tag">sky: <b id="skyTag">clear</b></span>
+    <span class="tag">wind: <b id="windTag">calm</b></span>
+  </div>
+</div>
+
+<div class="dash" id="dash">
+  <div class="dash-head"><span>Control</span><button id="collapse" title="minimise">–</button></div>
+  <div class="dash-body">
+    <div class="buttons">
+      <button id="camBtn" class="primary">Start camera</button>
+      <button id="serialBtn">Connect Arduino</button>
+    </div>
+    <div class="status">
+      <div><span id="camDot" class="dot"></span>Camera: <b id="camState">off</b></div>
+      <div><span id="serDot" class="dot"></span>Arduino: <b id="serState">not connected</b></div>
+      <div>Sending: <code id="sent">—</code></div>
+    </div>
+
+    <div class="meter">
+      <div class="row"><span class="label">Rate · storm</span><span class="val" id="rateVal">0.20 Hz</span></div>
+      <div class="sub" id="rateSub">your wave: 0.0 waves/s</div>
+      <div class="bar"><i id="rateBar"></i></div>
+    </div>
+    <div class="meter">
+      <div class="row"><span class="label">Amp · wind</span><span class="val" id="ampVal">0°</span></div>
+      <div class="sub" id="ampSub">your wave: ±0° hand tilt</div>
+      <div class="bar"><i id="ampBar"></i></div>
+    </div>
+
+    <canvas id="graph"></canvas>
+
+    <details class="tune">
+      <summary>Tune</summary>
+      <label>Wave angle for full amp <span id="maxAngLbl">±40°</span></label>
+      <input id="maxAng" type="range" min="15" max="70" value="40">
+      <label>Wave speed for full rate <span id="maxSpdLbl">3.0 waves/s</span></label>
+      <input id="maxSpd" type="range" min="1" max="5" step="0.1" value="3">
+    </details>
+  </div>
+</div>
+
+<script type="module">
+import { GestureRecognizer, FilesetResolver, DrawingUtils }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+
+// ------------------------------------------------------------------ servo limits
+// Must match the Arduino sketch: amp 0..35 deg of servo swing, freq 0.1..1.5 Hz, rain 0..1 (blue LEDs)
+const SERVO_AMP_MAX = 35;
+const SERVO_RATE_MIN = 0.2, SERVO_RATE_MAX = 1.5;
+const SEND_EVERY_MS = 100;
+
+// ------------------------------------------------------------------ wave tracker
+// Signal = hand tilt (deg): angle of the wrist -> middle-knuckle line from vertical.
+// Turn-around points are found with a dead-band so jitter doesn't count as waves.
+//   speed (waves/s) = half-swings / (2 * time spanned)
+//   angle (±deg)    = mean |peak-to-peak| / 2
+const WaveTracker = {
+  DEAD: 5,          // deg of reversal needed before a turn-around counts
+  WINDOW: 2.5,      // s of turn-around history used
+  STALE: 1.0,       // s without a turn-around = not waving
+  peaks: [], dir: 0, ext: null, extT: 0, lo: null, hi: null,
+  reset() { this.peaks = []; this.dir = 0; this.ext = this.lo = this.hi = null; },
+  push(t, a) {
+    if (this.dir === 0) {                       // no direction yet: wait for a clear move
+      if (this.lo === null) { this.lo = this.hi = a; return; }
+      this.lo = Math.min(this.lo, a); this.hi = Math.max(this.hi, a);
+      if (a - this.lo > this.DEAD) { this.dir = 1; this.ext = a; this.extT = t; }
+      else if (this.hi - a > this.DEAD) { this.dir = -1; this.ext = a; this.extT = t; }
+      return;
+    }
+    if (this.dir === 1) {                       // rising: follow the top, flip when it falls back
+      if (a > this.ext) { this.ext = a; this.extT = t; }
+      else if (this.ext - a > this.DEAD) {
+        this.peaks.push({ t: this.extT, a: this.ext });
+        this.dir = -1; this.ext = a; this.extT = t;
+      }
+    } else {                                    // falling: follow the bottom
+      if (a < this.ext) { this.ext = a; this.extT = t; }
+      else if (a - this.ext > this.DEAD) {
+        this.peaks.push({ t: this.extT, a: this.ext });
+        this.dir = 1; this.ext = a; this.extT = t;
+      }
+    }
+    while (this.peaks.length && t - this.peaks[0].t > this.WINDOW) this.peaks.shift();
+  },
+  measure(t) {
+    const p = this.peaks;
+    if (p.length < 2 || t - p[p.length - 1].t > this.STALE) return { speed: 0, angle: 0 };
+    const span = p[p.length - 1].t - p[0].t;
+    let sum = 0;
+    for (let i = 1; i < p.length; i++) sum += Math.abs(p[i].a - p[i - 1].a);
+    return { speed: (p.length - 1) / (2 * span), angle: sum / (p.length - 1) / 2 };
+  },
+};
+window.WaveTracker = WaveTracker;   // exposed for testing
+
+function handTilt(lm, w, h) {
+  const dx = (lm[9].x - lm[0].x) * w, dy = (lm[9].y - lm[0].y) * h;
+  return Math.atan2(dx, -dy) * 180 / Math.PI;    // 0 = fingers straight up
+}
+
+// ------------------------------------------------------------------ DOM
+const $ = (id) => document.getElementById(id);
+const video = $("video"), overlay = $("overlay"), octx = overlay.getContext("2d");
+const graph = $("graph"), gctx = graph.getContext("2d");
+let maxAng = +$("maxAng").value, maxSpd = +$("maxSpd").value;
+$("maxAng").oninput = (e) => { maxAng = +e.target.value; $("maxAngLbl").textContent = `±${maxAng}°`; };
+$("maxSpd").oninput = (e) => { maxSpd = +e.target.value; $("maxSpdLbl").textContent = `${maxSpd.toFixed(1)} waves/s`; };
+$("collapse").onclick = () => {
+  const d = $("dash"); d.classList.toggle("min");
+  $("collapse").textContent = d.classList.contains("min") ? "+" : "–";
+};
+
+// ------------------------------------------------------------------ MediaPipe
+let recognizer = null, drawer = null, lastVideoTime = -1;
+let tilt = null;                 // smoothed tilt
+const trace = [];                // {t, a} for the graph
+let handSeenAt = -1e9, gesture = "";
+let outAmp = 0, outRate = SERVO_RATE_MIN;    // smoothed values sent to the Arduino
+let wave = { speed: 0, angle: 0 };
+
+async function startCamera() {
+  $("camBtn").disabled = true;
+  $("camMsg").textContent = "Loading hand model…";
+  try {
+    const vision = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+    recognizer = await GestureRecognizer.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+        delegate: "GPU",
+      },
+      runningMode: "VIDEO", numHands: 1,
+    });
+    $("camMsg").textContent = "Allow camera access…";
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+    await video.play();
+    $("camMsg").hidden = true;
+    $("camDot").classList.add("on"); $("camState").textContent = "on";
+    drawer = new DrawingUtils(octx);
+  } catch (err) {
+    console.error(err);
+    $("camMsg").hidden = false;
+    $("camMsg").textContent = "Camera / model failed: " + err.message;
+    $("camBtn").disabled = false;
+  }
+}
+
+function track(t, now) {
+  if (!recognizer || !drawer || !video.videoWidth || video.currentTime === lastVideoTime) return;
+  lastVideoTime = video.currentTime;
+  if (overlay.width !== video.videoWidth) { overlay.width = video.videoWidth; overlay.height = video.videoHeight; }
+  const res = recognizer.recognizeForVideo(video, now);
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  if (res.landmarks && res.landmarks.length) {
+    const lm = res.landmarks[0];
+    handSeenAt = t;
+    gesture = res.gestures?.[0]?.[0]?.categoryName || "";
+    drawer.drawConnectors(lm, GestureRecognizer.HAND_CONNECTIONS, { color: "#3fb6c9", lineWidth: 4 });
+    drawer.drawLandmarks(lm, { color: "#f3c969", lineWidth: 1, radius: 3 });
+    const raw = handTilt(lm, video.videoWidth, video.videoHeight);
+    tilt = tilt === null ? raw : tilt + 0.8 * (raw - tilt);   // light smoothing (dead-band handles jitter)
+    WaveTracker.push(t, tilt);
+    trace.push({ t, a: tilt });
+  } else {
+    gesture = "";
+  }
+}
+
+// ------------------------------------------------------------------ main loop
+let lastFrame = performance.now();
+window.weatherOverride = null;   // e.g. {storm: 0.9, wind: 0.6} to preview the weather without a camera
+
+function loop() {
+  const now = performance.now(), t = now / 1000;
+  const dt = Math.min(0.05, (now - lastFrame) / 1000); lastFrame = now;
+  track(t, now);
+  while (trace.length && t - trace[0].t > 5) trace.shift();
+
+  const handPresent = t - handSeenAt < 0.5;
+  if (!handPresent) { tilt = null; WaveTracker.reset(); }
+  wave = WaveTracker.measure(t);
+
+  let tgtAmp = 0, tgtRate = SERVO_RATE_MIN;
+  if (handPresent && gesture !== "Closed_Fist" && wave.speed > 0) {
+    tgtAmp = SERVO_AMP_MAX * Math.min(1, wave.angle / maxAng);
+    tgtRate = SERVO_RATE_MIN + (SERVO_RATE_MAX - SERVO_RATE_MIN) * Math.min(1, Math.max(0, (wave.speed - 0.5) / (maxSpd - 0.5)));
+  }
+  outAmp += 0.08 * (tgtAmp - outAmp);
+  outRate += 0.08 * (tgtRate - outRate);
+
+  // weather levels 0..1 (they follow the servo values, so the sky matches the boat)
+  let storm = (outRate - SERVO_RATE_MIN) / (SERVO_RATE_MAX - SERVO_RATE_MIN);
+  let wind = outAmp / SERVO_AMP_MAX;
+  if (window.weatherOverride) ({ storm, wind } = window.weatherOverride);
+  Weather.update(dt, storm, wind);
+  Weather.draw();
+
+  $("gestureTag").textContent = !handPresent ? "no hand" : gesture === "Closed_Fist" ? "fist: calm" : (gesture || "hand").replace("_", " ").toLowerCase();
+  $("skyTag").textContent = Weather.skyName();
+  $("windTag").textContent = Weather.windName();
+  $("rateVal").textContent = `${outRate.toFixed(2)} Hz`;
+  $("rateSub").textContent = `your wave: ${wave.speed.toFixed(1)} waves/s`;
+  $("rateBar").style.width = `${100 * (outRate - SERVO_RATE_MIN) / (SERVO_RATE_MAX - SERVO_RATE_MIN)}%`;
+  $("ampVal").textContent = `${outAmp.toFixed(0)}°`;
+  $("ampSub").textContent = `your wave: ±${wave.angle.toFixed(0)}° hand tilt`;
+  $("ampBar").style.width = `${100 * outAmp / SERVO_AMP_MAX}%`;
+  drawGraph(t);
+  maybeSend(now, handPresent);
+  requestAnimationFrame(loop);
+}
+
+function drawGraph(t) {
+  const dpr = window.devicePixelRatio || 1, W = graph.clientWidth, H = graph.clientHeight;
+  if (graph.width !== Math.round(W * dpr)) { graph.width = Math.round(W * dpr); graph.height = Math.round(H * dpr); }
+  gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  gctx.clearRect(0, 0, W, H);
+  const y = (a) => H / 2 - (a / 90) * (H / 2 - 4), x = (tt) => W - (t - tt) / 5 * W;
+  gctx.strokeStyle = "rgba(120,170,190,.25)"; gctx.lineWidth = 1;
+  for (const a of [-maxAng, 0, maxAng]) { gctx.beginPath(); gctx.moveTo(0, y(a)); gctx.lineTo(W, y(a)); gctx.stroke(); }
+  gctx.strokeStyle = "#3fb6c9"; gctx.lineWidth = 1.6; gctx.beginPath();
+  trace.forEach((p, i) => (i ? gctx.lineTo(x(p.t), y(p.a)) : gctx.moveTo(x(p.t), y(p.a))));
+  gctx.stroke();
+  gctx.fillStyle = "#f3c969";
+  for (const p of WaveTracker.peaks) { gctx.beginPath(); gctx.arc(x(p.t), y(p.a), 2.5, 0, 7); gctx.fill(); }
+}
+
+// ------------------------------------------------------------------ weather layer
+// storm 0..1: fog banks roll in (0.03+) -> darken -> rain (0.35+) -> lightning (0.7+)
+// wind  0..1: cloud drift, wind streaks, flying leaves (0.45+), rain slant
+const Weather = (() => {
+  const cv = $("weather"), ctx = cv.getContext("2d");
+  let W = 0, H = 0, dpr = 1;
+  const S = { storm: 0, wind: 0 };              // smoothed levels actually drawn
+  const sm = (a, b, x) => { const k = Math.min(1, Math.max(0, (x - a) / (b - a))); return k * k * (3 - 2 * k); };
+  const rnd = (a, b) => a + Math.random() * (b - a);
+
+  // fog banks: soft blurred blobs baked into horizontally tileable textures,
+  // rendered pale (building storm) and slate (thunderstorm) and cross-faded
+  const FW = 1600, FH = 520;
+  function fogTexture(seed, color) {
+    const c = document.createElement("canvas"); c.width = FW; c.height = FH;
+    const g = c.getContext("2d");
+    let s = seed;
+    const r = () => ((s = (s * 9301 + 49297) % 233280) / 233280);
+    g.filter = "blur(26px)";
+    for (let i = 0; i < 46; i++) {
+      const x = r() * FW, y = FH * (0.05 + 0.6 * r() * r()), rad = 90 + 210 * r(), a = 0.18 + 0.3 * r();
+      for (const dx of [-FW, 0, FW]) {                 // wrap so the texture tiles seamlessly
+        const gr = g.createRadialGradient(x + dx, y, 0, x + dx, y, rad);
+        gr.addColorStop(0, `rgba(${color},${a})`); gr.addColorStop(1, `rgba(${color},0)`);
+        g.fillStyle = gr; g.beginPath(); g.ellipse(x + dx, y, rad * 1.6, rad, 0, 0, 7); g.fill();
+      }
+    }
+    g.filter = "none";
+    g.globalCompositeOperation = "destination-in";      // thick at the top, thinning downward
+    const fade = g.createLinearGradient(0, 0, 0, FH);
+    fade.addColorStop(0, "rgba(0,0,0,1)"); fade.addColorStop(0.55, "rgba(0,0,0,.75)"); fade.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = fade; g.fillRect(0, 0, FW, FH);
+    return c;
+  }
+  // far -> near: each layer rolls in at a higher storm level and drifts faster
+  const fog = [
+    { seed: 11,  from: 0.03, to: 0.30, h: 0.55, y: -0.06, depth: 0.45, off: 0 },
+    { seed: 457, from: 0.18, to: 0.50, h: 0.65, y: -0.02, depth: 0.75, off: 600 },
+    { seed: 903, from: 0.35, to: 0.75, h: 0.75, y: 0.03,  depth: 1.10, off: 1100 },
+  ].map((f) => ({ ...f, light: fogTexture(f.seed, "228,232,236"), dark: fogTexture(f.seed, "70,78,92") }));
+
+  const drops = Array.from({ length: 900 }, () => ({ x: Math.random(), y: Math.random(), len: rnd(10, 22), spd: rnd(0.9, 1.3) }));
+  const streaks = Array.from({ length: 70 }, () => ({ x: Math.random(), y: rnd(0.05, 0.95), len: rnd(60, 220), spd: rnd(0.7, 1.4), a: rnd(0.3, 1), bend: rnd(-12, 12) }));
+  const leaves = Array.from({ length: 28 }, () => ({ x: Math.random(), y: Math.random(), rot: rnd(0, 6.3), spin: rnd(-8, 8), size: rnd(5, 10), ph: rnd(0, 6.3),
+                                                     col: ["#6f9a3a", "#a8822e", "#7e5a2b", "#93a845"][Math.floor(Math.random() * 4)] }));
+
+  let flash = 0, bolt = null, boltT = 0, nextStrike = 0, clock = 0;
+
+  function resize() {
+    dpr = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  window.addEventListener("resize", resize); resize();
+
+  function makeBolt() {
+    const pts = [[rnd(0.2, 0.8) * W, H * rnd(0.12, 0.22)]];
+    const end = H * rnd(0.7, 0.9);
+    while (pts[pts.length - 1][1] < end) {
+      const [x, y] = pts[pts.length - 1];
+      pts.push([x + rnd(-28, 28), y + rnd(18, 42)]);
+    }
+    const branches = [];
+    for (let b = 0; b < 3 && pts.length > 5; b++) {
+      const start = pts[Math.floor(rnd(2, pts.length - 3))], br = [start];
+      const dir = Math.random() < 0.5 ? -1 : 1, n = Math.floor(rnd(3, 7));
+      for (let k = 0; k < n; k++) {
+        const [x, y] = br[br.length - 1];
+        br.push([x + dir * rnd(8, 30), y + rnd(12, 30)]);
+      }
+      branches.push(br);
+    }
+    return { pts, branches };
+  }
+
+  function update(dt, storm, wind) {
+    clock += dt;
+    S.storm += (storm - S.storm) * Math.min(1, dt * 0.9);   // weather changes slowly (~1-2 s)
+    S.wind += (wind - S.wind) * Math.min(1, dt * 1.2);
+
+    for (const f of fog) f.off += (10 + S.wind * 340) * f.depth * dt;   // fog drift, px/s
+
+    const vx = S.wind * 900;                                // rain sideways px/s
+    for (const d of drops) {
+      d.y += (900 * d.spd / H) * dt;
+      d.x += (vx / W) * dt;
+      if (d.y > 1.02) { d.y = -Math.random() * 0.2; d.x = Math.random() * 1.3 - 0.3 * S.wind; }
+      if (d.x > 1.05) d.x -= 1.1;
+    }
+    for (const s of streaks) {
+      s.x += ((350 + 1300 * S.wind) * s.spd / W) * dt;
+      if (s.x > 1.15) { s.x = -0.25 * Math.random(); s.y = rnd(0.05, 0.95); }
+    }
+    for (const l of leaves) {
+      l.x += ((250 + 900 * S.wind) * (0.6 + 0.4 * Math.sin(l.ph)) / W) * dt;
+      l.y += (Math.sin(clock * 3 + l.ph) * 60 / H) * dt + (20 / H) * dt;
+      l.rot += l.spin * dt;
+      if (l.x > 1.05) { l.x = -0.05; l.y = Math.random(); }
+      if (l.y > 1.05) l.y = -0.05;
+    }
+
+    const lightning = sm(0.7, 0.95, S.storm);
+    if (lightning > 0 && clock > nextStrike) {
+      bolt = makeBolt(); boltT = 0.22; flash = 1;
+      nextStrike = clock + rnd(0.6, 3.5) / (0.3 + lightning);  // stronger storm = more strikes
+      if (Math.random() < 0.35) setTimeout(() => { flash = 0.8; }, 120);   // double flicker
+    }
+    flash = Math.max(0, flash - dt * 4);
+    boltT = Math.max(0, boltT - dt);
+  }
+
+  function draw() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    const st = S.storm, wi = S.wind;
+
+    // sky darkens as the storm builds
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, `rgba(18,24,34,${0.7 * sm(0.1, 0.9, st)})`);
+    sky.addColorStop(1, `rgba(18,24,34,${0.35 * sm(0.2, 0.9, st)})`);
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+
+    // fog banks roll in layer by layer, then turn slate grey
+    const grey = sm(0.3, 0.85, st);
+    for (const f of fog) {
+      const a = sm(f.from, f.to, st) * (0.92 + 0.08 * Math.sin(clock * 0.6 + f.seed));   // slow breathing
+      if (a <= 0.01) continue;
+      const dh = H * f.h, sc = dh / FH, tw = FW * sc * 1.25, y = f.y * H;
+      let x0 = -(f.off % tw);
+      for (let x = x0; x < W; x += tw) {
+        ctx.globalAlpha = a * (1 - grey); ctx.drawImage(f.light, x, y, tw, dh);
+        ctx.globalAlpha = a * grey;       ctx.drawImage(f.dark, x, y, tw, dh);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // wind streaks
+    const nStreak = Math.round(streaks.length * sm(0.08, 0.9, wi));
+    ctx.lineCap = "round";
+    for (let i = 0; i < nStreak; i++) {
+      const s = streaks[i], x = s.x * W, y = s.y * H, len = s.len * (0.6 + wi);
+      ctx.strokeStyle = `rgba(235,245,250,${0.35 * s.a * sm(0.05, 0.6, wi)})`;
+      ctx.lineWidth = 1.2 + 1.2 * s.a;
+      ctx.beginPath(); ctx.moveTo(x - len, y); ctx.quadraticCurveTo(x - len / 2, y + s.bend, x, y); ctx.stroke();
+    }
+
+    // rain: starts light, gets heavy; slants with the wind
+    const nRain = Math.round(drops.length * rainLevel());
+    if (nRain) {
+      const slant = wi;
+      ctx.strokeStyle = `rgba(190,210,235,${0.35 + 0.3 * sm(0.5, 1, st)})`;
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      for (let i = 0; i < nRain; i++) {
+        const d = drops[i], x = d.x * W, y = d.y * H, len = d.len * (0.8 + 0.6 * st);
+        ctx.moveTo(x, y); ctx.lineTo(x - slant * len, y - len);
+      }
+      ctx.stroke();
+    }
+
+    // flying leaves in strong wind
+    const nLeaf = Math.round(leaves.length * sm(0.45, 0.9, wi));
+    for (let i = 0; i < nLeaf; i++) {
+      const l = leaves[i];
+      ctx.save(); ctx.translate(l.x * W, l.y * H); ctx.rotate(l.rot);
+      ctx.fillStyle = l.col; ctx.beginPath(); ctx.ellipse(0, 0, l.size, l.size * 0.45, 0, 0, 7); ctx.fill();
+      ctx.restore();
+    }
+
+    // lightning
+    if (boltT > 0 && bolt) {
+      const a = boltT / 0.22;
+      ctx.save();
+      ctx.shadowColor = "rgba(190,215,255,.95)"; ctx.shadowBlur = 24;
+      ctx.strokeStyle = `rgba(245,250,255,${a})`; ctx.lineJoin = "round";
+      const path = (pts, w) => { ctx.lineWidth = w; ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); };
+      path(bolt.pts, 3.2);
+      for (const b of bolt.branches) path(b, 1.6);
+      ctx.restore();
+    }
+    if (flash > 0) { ctx.fillStyle = `rgba(225,235,255,${0.55 * flash})`; ctx.fillRect(0, 0, W, H); }
+  }
+
+  const rainLevel = () => sm(0.35, 0.95, S.storm);   // 0 dry .. 1 downpour (also drives the blue LEDs)
+  const skyName = () => S.storm < 0.08 ? "clear" : S.storm < 0.35 ? "clouds rolling in" : S.storm < 0.55 ? "light rain"
+                      : S.storm < 0.7 ? "heavy rain" : "thunderstorm";
+  const windName = () => {
+    const kmh = Math.round(S.wind * 90);
+    const n = kmh < 3 ? "calm" : kmh < 20 ? "light breeze" : kmh < 40 ? "breezy" : kmh < 62 ? "strong wind" : "gale";
+    return `${n} · ${kmh} km/h`;
+  };
+  return { update, draw, skyName, windName, rainLevel, S };
+})();
+window.Weather = Weather;   // exposed for testing
+
+// ------------------------------------------------------------------ Web Serial
+let port = null, writer = null, readyAt = 0, lastSend = 0;
+const enc = new TextEncoder();
+
+async function connectSerial() {
+  if (!("serial" in navigator)) { alert("Web Serial needs Chrome or Edge on desktop."); return; }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 9600 });
+    writer = port.writable.getWriter();
+    readyAt = performance.now() + 2000;          // Uno resets when the port opens
+    $("serDot").classList.add("on"); $("serState").textContent = "connected";
+    $("serialBtn").textContent = "Disconnect";
+  } catch (err) {
+    console.error(err);
+    $("serState").textContent = "failed: " + err.message;
+  }
+}
+async function dropSerial() {
+  try { writer?.releaseLock(); await port?.close(); } catch (_) {}
+  port = writer = null;
+  $("serDot").classList.remove("on"); $("serState").textContent = "not connected";
+  $("serialBtn").textContent = "Connect Arduino";
+}
+// Uno unplugged -> drop the dead connection so the status is honest
+if ("serial" in navigator) navigator.serial.addEventListener("disconnect", (e) => { if (e.target === port) dropSerial(); });
+
+function maybeSend(now, handPresent) {
+  if (now - lastSend < SEND_EVERY_MS) return;
+  lastSend = now;
+  const msg = `${outAmp.toFixed(1)},${outRate.toFixed(2)},${Weather.rainLevel().toFixed(2)}`;   // amp,freq,rain
+  // No hand: stop sending. After 3 s the sketch eases the boat back to CENTER.
+  if (!handPresent) { $("sent").textContent = "— (no hand: boat settles still)"; return; }
+  $("sent").textContent = msg;
+  if (writer && now > readyAt) writer.write(enc.encode(msg + "\n")).catch(dropSerial);
+}
+
+$("camBtn").onclick = startCamera;
+$("serialBtn").onclick = () => (writer ? dropSerial() : connectSerial());
+if (!("serial" in navigator)) { $("serialBtn").disabled = true; $("serState").textContent = "use Chrome or Edge"; }
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

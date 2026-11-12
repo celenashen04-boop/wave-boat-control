@@ -12,6 +12,8 @@
 //    The page sends "amp,freq,rain" lines: amp 0..35 deg, freq 0.1..1.5 Hz,
 //    rain 0..1 (0 = dry, 1 = downpour). The blue LEDs glow brighter as it rains harder.
 //    No message for 3 s -> boat eases back to CENTER, LEDs fade off.
+//    In the thunderstorm stage the page also sends "L" each time a bolt
+//    strikes: the blue LEDs flicker like lightning, then fall back to the rain glow.
 //
 // The onboard LED lights while messages from the page are arriving.
 
@@ -30,6 +32,20 @@ float phase = 0;
 unsigned long lastMsg = 0, lastTime = 0;
 bool holding = false;                  // true after you type a single angle
 
+// Lightning flicker: {brightness, ms} steps played once per "L" from the page.
+// Bright-dark-bright stutter like a real strike, then a fading afterglow.
+const int FLICKER[][2] = {
+  {255, 50}, {0, 40}, {255, 30}, {20, 60}, {220, 70}, {90, 60}, {160, 40}, {40, 60}
+};
+const int FLICKER_STEPS = sizeof(FLICKER) / sizeof(FLICKER[0]);
+int flickerStep = -1;                  // -1 = not flickering
+unsigned long flickerAt = 0;           // when the current step started
+
+void startLightning() {
+  flickerStep = 0;
+  flickerAt = millis();
+}
+
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   for (int p : RAIN_LEDS) { pinMode(p, OUTPUT); analogWrite(p, 0); }
@@ -47,6 +63,12 @@ void readSerial() {
   String line = Serial.readStringUntil('\n');
   line.trim();
   if (line.length() == 0) return;
+
+  if (line[0] == 'L' || line[0] == 'l') {   // "L" = lightning strike from the page
+    startLightning();
+    lastMsg = millis();
+    return;
+  }
 
   int comma = line.indexOf(',');
   if (comma >= 0) {                    // "amp,freq,rain" from the wave page
@@ -87,6 +109,16 @@ void loop() {
 
   // blue "rain" lights: visible glow as soon as the first drops fall, full bright in a downpour
   int level = rain < 0.02 ? 0 : (int)(50 + rain * 205);
+
+  // lightning: play the flicker steps on top of the rain glow, then hand back to it
+  if (flickerStep >= 0) {
+    while (flickerStep < FLICKER_STEPS && now - flickerAt >= (unsigned long)FLICKER[flickerStep][1]) {
+      flickerAt += FLICKER[flickerStep][1];
+      flickerStep++;
+    }
+    if (flickerStep >= FLICKER_STEPS) flickerStep = -1;     // done
+    else level = FLICKER[flickerStep][0];
+  }
   for (int p : RAIN_LEDS) analogWrite(p, level);
 
   phase += 2 * PI * freq * dt;

@@ -412,8 +412,9 @@ const Weather = (() => {
     const lightning = sm(0.7, 0.95, S.storm);
     if (lightning > 0 && clock > nextStrike) {
       bolt = makeBolt(); boltT = 0.22; flash = 1;
+      window.onLightning?.();                                   // tell the Arduino: flicker the LEDs now
       nextStrike = clock + rnd(0.6, 3.5) / (0.3 + lightning);  // stronger storm = more strikes
-      if (Math.random() < 0.35) setTimeout(() => { flash = 0.8; }, 120);   // double flicker
+      if (Math.random() < 0.35) setTimeout(() => { flash = 0.8; window.onLightning?.(); }, 120);   // double flicker
     }
     flash = Math.max(0, flash - dt * 4);
     boltT = Math.max(0, boltT - dt);
@@ -539,6 +540,11 @@ function maybeSend(now, handPresent) {
   $("sent").textContent = msg;
   if (writer && now > readyAt) writer.write(enc.encode(msg + "\n")).catch(dropSerial);
 }
+
+// A bolt on screen sends "L" right away (not throttled) so the LEDs flicker in sync with the flash.
+window.onLightning = () => {
+  if (writer && performance.now() > readyAt) writer.write(enc.encode("L\n")).catch(dropSerial);
+};
 
 $("camBtn").onclick = startCamera;
 $("serialBtn").onclick = () => (writer ? dropSerial() : connectSerial());
